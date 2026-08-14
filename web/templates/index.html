@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GitHub 密钥扫描器 · API Key 情报库</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">🔑</span>
+    <div>
+      <h1>GitHub 密钥扫描器</h1>
+      <p class="sub">sk-* 密钥泄露监测 · AI 推断服务商与 API_BASE · 数据来自公开代码</p>
+    </div>
+  </div>
+  <div class="top-actions">
+    <button id="btn-export" class="btn btn-ghost" title="按当前筛选条件导出 CSV">导出 CSV</button>
+    <button id="btn-refresh" class="btn btn-ghost">刷新</button>
+  </div>
+</header>
+
+<main>
+  <!-- 统计卡片 -->
+  <section class="cards" id="stats-cards">
+    <div class="card"><div class="card-num" id="st-total">-</div><div class="card-label">密钥总数</div></div>
+    <div class="card"><div class="card-num" id="st-today">-</div><div class="card-label">今日新增</div></div>
+    <div class="card"><div class="card-num" id="st-high">-</div><div class="card-label">高置信度（≥0.8）</div></div>
+    <div class="card"><div class="card-num" id="st-providers">-</div><div class="card-label">涉及服务商</div></div>
+  </section>
+
+  <!-- 扫描任务面板（全自动托管状态） -->
+  <section class="tasks-panel">
+    <div class="tasks-head">
+      <div class="tasks-title">
+        <h3>扫描任务（全自动托管）</h3>
+        <span id="task-status-line" class="task-status-line"></span>
+      </div>
+      <button id="btn-trigger-scan" class="btn btn-primary">立即扫描</button>
+    </div>
+    <table class="tasks-table">
+      <thead>
+        <tr>
+          <th>#</th><th>开始时间</th><th>触发</th><th>模式</th><th>范围窗口</th>
+          <th>命中</th><th>跳过</th><th>分析</th><th>新增</th><th>更新</th><th>状态</th><th>耗时</th>
+        </tr>
+      </thead>
+      <tbody id="tasks-tbody"></tbody>
+    </table>
+    <div class="task-cursor" id="task-cursor"></div>
+  </section>
+
+  <!-- 筛选工具栏 -->
+  <section class="toolbar">
+    <input id="inp-q" type="search" placeholder="搜索密钥 / 服务商 / 仓库 / 路径 / 备注 / API_BASE…">
+    <select id="sel-category">
+      <option value="">全部分类</option>
+      <option value="llm">大模型</option>
+      <option value="cloud">云服务</option>
+      <option value="other">其他服务</option>
+      <option value="unknown">未知</option>
+    </select>
+    <select id="sel-provider"><option value="">全部服务商</option></select>
+    <select id="sel-conf">
+      <option value="">全部置信度</option>
+      <option value="0.6">≥ 3 分（有线索）</option>
+      <option value="0.8">≥ 4 分（调用/结构明确）</option>
+      <option value="1.0">5 分（文件含明确 URL）</option>
+    </select>
+    <select id="sel-status">
+      <option value="">全部有效性</option>
+      <option value="unknown">未验证</option>
+      <option value="active">疑似有效</option>
+      <option value="invalid">无效</option>
+      <option value="revoked">已吊销</option>
+    </select>
+  </section>
+
+  <!-- 分类分布 -->
+  <section class="distro" id="distro-box" hidden>
+    <h3>分类分布</h3>
+    <div id="distro-bars"></div>
+  </section>
+
+  <!-- 服务商分布 -->
+  <section class="distro" id="provider-box" hidden>
+    <h3>服务商分布</h3>
+    <div id="provider-bars"></div>
+  </section>
+
+  <!-- 表格 -->
+  <section class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th><th>API KEY</th><th>分类</th><th>服务商</th><th>API_BASE_URL</th>
+          <th>置信度</th><th>来源</th><th>备注</th><th>状态</th><th>首次发现</th><th></th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    <div class="empty" id="empty" hidden>暂无数据 —— 先运行 <code>python main.py scan --demo</code> 体验，或配置 GITHUB_TOKEN 后真实扫描</div>
+  </section>
+
+  <!-- 分页 -->
+  <footer class="pager">
+    <span id="page-info"></span>
+    <div>
+      <button id="btn-prev" class="btn">上一页</button>
+      <button id="btn-next" class="btn">下一页</button>
+    </div>
+  </footer>
+</main>
+
+<!-- 详情弹层 -->
+<div class="modal-mask" id="modal" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <h3>密钥详情</h3>
+      <button class="modal-close" id="modal-close">✕</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

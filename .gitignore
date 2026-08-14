@@ -1,0 +1,15 @@
+# 密钥与配置
+.env
+
+# 数据与缓存（含扫描结果 keys.csv、数据库、日志，全部不入库）
+data/
+__pycache__/
+*.pyc
+
+# 虚拟环境
+.venv/
+venv/
+
+# 编辑器
+.idea/
+.vscode/

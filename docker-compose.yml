@@ -1,0 +1,44 @@
+# github-key-scanner 一键部署编排
+#
+# 使用前提：
+#   1. 复制 .env.example 为 .env 并填入 GITHUB_TOKEN / AI_API_KEY（compose 会读取该文件注入容器）
+#   2. 执行 docker compose up -d --build
+#
+# 拓扑：
+#   - web    ：Web 仪表盘（http://<宿主机>:8765）
+#   - daemon ：常驻扫描（默认每 2 小时一轮增量扫描）
+#   两者共享同一个 data 卷（SQLite 数据库 + 扫描日志 + 触发文件），
+#   Web 端「立即扫描」按钮写入触发文件，daemon 下轮立即响应。
+services:
+  web:
+    build: .
+    container_name: gks-web
+    ports:
+      - "${WEB_PORT:-8765}:8765"
+    environment:
+      # 容器内必须监听 0.0.0.0，端口映射才生效（environment 优先于 .env）
+      WEB_HOST: "0.0.0.0"
+    env_file:
+      - .env
+    volumes:
+      - keydata:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8765/api/status',timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  daemon:
+    build: .
+    container_name: gks-daemon
+    command: ["python", "-u", "main.py", "daemon"]
+    env_file:
+      - .env
+    volumes:
+      - keydata:/app/data
+    restart: unless-stopped
+
+volumes:
+  keydata:
