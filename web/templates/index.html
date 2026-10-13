@@ -46,6 +46,7 @@
           <option value="7d">最近 7 天</option>
           <option value="30d" selected>最近 30 天</option>
           <option value="custom">自定义日期</option>
+          <option value="after">指定时间之后</option>
         </select>
       </label>
       <div id="custom-scan-dates" class="scope-dates" hidden>
@@ -56,11 +57,16 @@
           <input id="scan-end-date" type="date" name="end_date">
         </label>
       </div>
+      <div id="after-scan-time" class="scope-dates" hidden>
+        <label class="scope-field" for="scan-after-at">只扫描此时间之后（北京时间）
+          <input id="scan-after-at" type="datetime-local" name="after_at" step="1">
+        </label>
+      </div>
       <button id="btn-save-scope" type="submit" class="btn">保存范围</button>
       <span id="scan-scope-feedback" class="scope-feedback" role="status" aria-live="polite"></span>
     </form>
     <p id="scan-scope-summary" class="scope-summary">正在读取扫描范围…</p>
-    <p class="scope-help">按仓库最后推送时间筛选，较新的候选优先；自定义日期按北京时间计算。保存后从下一轮生效，历史记录保留。扫描受搜索页数限制。</p>
+    <p class="scope-help">按仓库最后推送时间筛选，较新的候选优先；日期和指定时间按北京时间计算。“指定时间之后”不含该时刻，上限为每轮开始时间。保存后从下一轮生效，历史记录保留。扫描受搜索页数限制。</p>
     <div class="tasks-scroll">
     <table class="tasks-table">
       <thead>

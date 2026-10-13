@@ -7,7 +7,7 @@ import json
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -27,6 +27,38 @@ def response(data, status=200):
 
 
 class WindowTests(unittest.TestCase):
+    def test_after_time_is_beijing_strict_and_keeps_fixed_start_next_round(self):
+        from gks.scan_scope import resolve_window, save_settings, load_settings
+        value = {"preset": "after", "after_at": "2026-10-01T12:34:56"}
+        window = resolve_window(value, now=NOW)
+        self.assertEqual(window.start.isoformat(), "2026-10-01T04:34:56+00:00")
+        self.assertEqual(window.end, NOW)
+        self.assertFalse(window.contains(window.start))
+        self.assertTrue(window.contains(window.start + timedelta(seconds=1)))
+        self.assertFalse(window.contains(window.end))
+        self.assertTrue(window.as_dict()["start_exclusive"])
+        self.assertIn("2026-10-01 12:34:56", window.label)
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "scope.json"
+            save_settings(path, value, now=NOW)
+            later = resolve_window(load_settings(path), now=NOW + timedelta(days=2))
+            self.assertEqual(later.start, window.start)
+            self.assertEqual(later.end, NOW + timedelta(days=2))
+
+    def test_after_time_invalid_or_future_cannot_replace_saved_scope(self):
+        from gks.scan_scope import save_settings, load_settings
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "scope.json"
+            save_settings(path, {"preset": "30d"}, now=NOW)
+            for raw in (None, [], "", "2026-10-01", "2026-10-01T12:00Z",
+                        "2026-10-01T12:00+08:00", "2026-10-01T25:00", "2026-02-30T12:00",
+                        "2026-10-13T12:00:00", "2026-10-14T12:00", "0001-01-01T00:00"):
+                with self.subTest(raw=raw), self.assertRaises(ValueError):
+                    save_settings(path, {"preset": "after", "after_at": raw}, now=NOW)
+                self.assertEqual(load_settings(path)["preset"], "30d")
+            settings = save_settings(path, {"preset": "after", "after_at": "2026-10-01T12:34"}, now=NOW)
+            self.assertEqual(settings["after_at"], "2026-10-01T12:34:00")
+
     def test_presets_are_rolling_and_default_is_30_days(self):
         from gks.scan_scope import resolve_window, load_settings
         with tempfile.TemporaryDirectory() as td:
@@ -66,6 +98,19 @@ class WindowTests(unittest.TestCase):
 
 
 class RepositoryFilterTests(unittest.TestCase):
+    def test_after_time_excludes_equal_and_earlier_pushes(self):
+        from gks.scan_scope import resolve_window
+        window = resolve_window({"preset": "after", "after_at": "2026-10-01T12:00"}, now=NOW)
+        hits = [Hit(repo="example/" + name, path="a.py", html_url="", language="")
+                for name in ("before", "equal", "after")]
+        responses = [response({"private": False, "pushed_at": value})
+                     for value in ("2026-10-01T03:59:59Z", "2026-10-01T04:00:00Z", "2026-10-01T04:00:01Z")]
+        searcher = GitHubCodeSearch("synthetic-token", min_interval=0)
+        with mock.patch.object(searcher.session, "get", side_effect=responses):
+            accepted, counts = searcher.filter_recent_repositories(hits, window)
+        self.assertEqual([hit.repo for hit in accepted], ["example/after"])
+        self.assertEqual(counts["files_outside_time"], 2)
+
     def test_metadata_cached_time_filtered_public_only_and_newest_first(self):
         from gks.scan_scope import resolve_window
         window = resolve_window({"preset": "30d"}, now=NOW)
@@ -99,6 +144,19 @@ class RepositoryFilterTests(unittest.TestCase):
 
 
 class SettingsApiTests(unittest.TestCase):
+    def test_after_time_api_roundtrip_and_bad_input_preserves_saved_value(self):
+        with tempfile.TemporaryDirectory() as td, mock.patch.object(config, "DB_PATH", Path(td) / "monitor.db"), \
+                mock.patch.object(config, "SCAN_SETTINGS_FILE", Path(td) / "scope.json"):
+            web = importlib.reload(importlib.import_module("web.app"))
+            client = web.app.test_client()
+            saved = client.put("/api/scan/settings", json={"preset": "after", "after_at": "2026-10-01T09:30"})
+            self.assertEqual(saved.status_code, 200)
+            self.assertEqual(saved.json["settings"]["after_at"], "2026-10-01T09:30:00")
+            self.assertTrue(saved.json["window"]["start_exclusive"])
+            self.assertEqual(client.get("/api/status").json["scan_scope"]["settings"], saved.json["settings"])
+            self.assertEqual(client.put("/api/scan/settings", json={"preset": "after", "after_at": "bad"}).status_code, 400)
+            self.assertEqual(client.get("/api/scan/settings").json["settings"], saved.json["settings"])
+
     def test_settings_api_persists_and_rejects_bad_ranges(self):
         with tempfile.TemporaryDirectory() as td, mock.patch.object(config, "DB_PATH", Path(td) / "monitor.db"), \
                 mock.patch.object(config, "SCAN_SETTINGS_FILE", Path(td) / "scope.json", create=True):

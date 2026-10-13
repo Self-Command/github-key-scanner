@@ -152,7 +152,7 @@ async function showDetail(id) {
 /* ---------- 扫描任务面板 ---------- */
 const TRIGGER_MAP = { manual: "手动", schedule: "定时", web: "Web" };
 const TASK_STATUS_MAP = { running: "运行中", success: "成功", error: "失败" };
-const SCOPE_LABELS = { "24h": "最近 24 小时", "7d": "最近 7 天", "30d": "最近 30 天", custom: "自定义日期" };
+const SCOPE_LABELS = { "24h": "最近 24 小时", "7d": "最近 7 天", "30d": "最近 30 天", custom: "自定义日期", after: "指定时间之后" };
 const scopeState = { initialized: false, dirty: false };
 const beijingTime = (value) => value ? new Intl.DateTimeFormat("zh-CN", {
   timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
@@ -161,11 +161,15 @@ const beijingTime = (value) => value ? new Intl.DateTimeFormat("zh-CN", {
 
 function updateCustomDates() {
   const custom = $("sel-scan-range").value === "custom";
+  const after = $("sel-scan-range").value === "after";
   $("custom-scan-dates").hidden = !custom;
   for (const id of ["scan-start-date", "scan-end-date"]) {
     $(id).disabled = !custom;
     $(id).required = custom;
   }
+  $("after-scan-time").hidden = !after;
+  $("scan-after-at").disabled = !after;
+  $("scan-after-at").required = after;
 }
 
 function renderScanScope(scope) {
@@ -180,11 +184,13 @@ function renderScanScope(scope) {
     $("sel-scan-range").value = settings.preset;
     $("scan-start-date").value = settings.start_date || "";
     $("scan-end-date").value = settings.end_date || "";
+    $("scan-after-at").value = settings.after_at || "";
     updateCustomDates();
   }
   scopeState.initialized = true;
   $("scan-scope-summary").classList.remove("err-text");
-  $("scan-scope-summary").textContent = `已保存：${window.label} · 当前范围 ${beijingTime(window.start_at)} 至 ${beijingTime(window.end_before)}（不含终点）`;
+  const boundaries = window.start_exclusive ? "不含起点和终点" : "不含终点";
+  $("scan-scope-summary").textContent = `已保存：${window.label} · 当前范围 ${beijingTime(window.start_at)} 至 ${beijingTime(window.end_before)}（${boundaries}）`;
 }
 
 async function saveScanScope(event) {
@@ -192,7 +198,8 @@ async function saveScanScope(event) {
   const btn = $("btn-save-scope");
   btn.disabled = true;
   const value = { preset: $("sel-scan-range").value,
-    start_date: $("scan-start-date").value, end_date: $("scan-end-date").value };
+    start_date: $("scan-start-date").value, end_date: $("scan-end-date").value,
+    after_at: $("scan-after-at").value };
   $("scan-scope-feedback").textContent = "正在保存…";
   try {
     const response = await fetch("/api/scan/settings", { method: "PUT",
@@ -200,7 +207,7 @@ async function saveScanScope(event) {
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "保存失败");
     // Preserve edits made while the request was in flight.
-    if ($("sel-scan-range").value === value.preset && $("scan-start-date").value === value.start_date && $("scan-end-date").value === value.end_date) scopeState.dirty = false;
+    if ($("sel-scan-range").value === value.preset && $("scan-start-date").value === value.start_date && $("scan-end-date").value === value.end_date && $("scan-after-at").value === value.after_at) scopeState.dirty = false;
     renderScanScope(result);
     $("scan-scope-feedback").textContent = scopeState.dirty ? "已保存提交的范围，当前更改尚未保存" : result.message;
   } catch (error) {
@@ -244,7 +251,8 @@ function renderTasks(rows) {
     return;
   }
   tbody.innerHTML = rows.map((r) => {
-    const scope = r.repo_pushed_from ? `${esc(SCOPE_LABELS[r.repo_time_preset] || r.repo_time_preset)}<br>${esc(beijingTime(r.repo_pushed_from))} 至<br>${esc(beijingTime(r.repo_pushed_before))}（不含终点）` : "历史任务：未按推送时间筛选";
+    const boundaries = r.repo_time_preset === "after" ? "不含起点和终点" : "不含终点";
+    const scope = r.repo_pushed_from ? `${esc(SCOPE_LABELS[r.repo_time_preset] || r.repo_time_preset)}<br>${esc(beijingTime(r.repo_pushed_from))} 至<br>${esc(beijingTime(r.repo_pushed_before))}（${boundaries}）` : "历史任务：未按推送时间筛选";
     const stCls = `badge badge-${r.status === "success" ? "active" : (r.status === "error" ? "invalid" : "unknown")}`;
     return `<tr>
       <td>${r.id}</td>
@@ -302,7 +310,7 @@ $("btn-export").addEventListener("click", () => {
 });
 $("btn-trigger-scan").addEventListener("click", triggerScan);
 $("scan-scope-form").addEventListener("submit", saveScanScope);
-for (const id of ["sel-scan-range", "scan-start-date", "scan-end-date"]) {
+for (const id of ["sel-scan-range", "scan-start-date", "scan-end-date", "scan-after-at"]) {
   $(id).addEventListener("change", () => {
     scopeState.dirty = true;
     updateCustomDates();
