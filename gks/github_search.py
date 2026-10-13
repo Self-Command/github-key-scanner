@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 import requests
 
@@ -75,6 +76,8 @@ class Hit:
     fragments: list[str] = field(default_factory=list)   # text_matches 片段
     full_text: str = ""            # 文件全文（可选抓取）
     key_count: int = 0             # 提取出的密钥数量（搜索后填充）
+    repo_pushed_at: str = ""       # 经 GitHub 仓库元数据核验的 UTC 时间
+    content_sha: str = ""          # GitHub blob SHA；同路径修改后仍可重新分析
 
     @property
     def text(self) -> str:
@@ -103,6 +106,9 @@ class GitHubCodeSearch:
         self.fetch_content = fetch_content
         self._last_request_at = 0.0
         self._last_raw_at = 0.0
+        self._last_metadata_at = 0.0
+        self.search_errors = 0
+        self.search_incomplete_queries = 0
 
     # ---------- 内部工具 ----------
     def _throttle(self) -> None:
@@ -165,8 +171,13 @@ class GitHubCodeSearch:
         if isinstance(queries, str):
             queries = [(queries, 0)]
         hits: list[Hit] = []
+        self.search_errors = 0
+        self.search_incomplete_queries = 0
         seen: set[str] = set()
         for query, pages in queries:
+            # REST uses legacy code-search syntax; is:public is not supported
+            # there and narrows the search as a text term. Enforce visibility
+            # below before reading fragments or constructing a Hit.
             for page in range(1, (pages or self.max_pages) + 1):
                 self._throttle()
                 resp = self.session.get(SEARCH_API, params={
@@ -175,6 +186,7 @@ class GitHubCodeSearch:
                 })
                 self._wait_until_reset(resp)
                 if resp.status_code != 200:
+                    self.search_errors += 1
                     msg = resp.json().get("message", resp.text[:200]) if resp.headers.get("content-type", "").startswith("application/json") else resp.text[:200]
                     if page == 1:
                         print(f"[警告] 查询“{query}”失败（HTTP {resp.status_code}）：{msg[:120]}，跳过该查询。")
@@ -183,8 +195,14 @@ class GitHubCodeSearch:
                     break
 
                 data = resp.json()
+                if data.get("incomplete_results") is True:
+                    self.search_incomplete_queries += 1
                 items = data.get("items", [])
                 for it in items:
+                    # Fail closed: a token with private-repository access must
+                    # still only feed explicitly public results to monitoring.
+                    if it.get("repository", {}).get("private") is not False:
+                        continue
                     repo = it["repository"]["full_name"]
                     path = it.get("path", "")
                     fk = f"{repo}/{path}"
@@ -197,6 +215,7 @@ class GitHubCodeSearch:
                         html_url=it.get("html_url", ""),
                         language=it.get("language") or "",
                         fragments=[m.get("fragment", "") for m in it.get("text_matches", [])],
+                        content_sha=it.get("sha", ""),
                     )
                     hits.append(hit)
 
@@ -206,6 +225,50 @@ class GitHubCodeSearch:
                 if len(items) < self.per_page or len(hits) >= total:
                     break
         return hits
+
+    def filter_recent_repositories(self, hits: list[Hit], window) -> tuple[list[Hit], dict]:
+        """Verify push time before content fetch; metadata cached within this round."""
+        cache = {}
+        accepted = []
+        stats = {"repos_checked": 0, "files_outside_time": 0, "files_unverified_time": 0}
+        quota_exhausted = False
+        for hit in hits:
+            if hit.repo not in cache:
+                pushed_at = None
+                if not quota_exhausted and re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", hit.repo):
+                    elapsed = time.monotonic() - self._last_metadata_at
+                    if elapsed < 0.1:
+                        time.sleep(0.1 - elapsed)
+                    self._last_metadata_at = time.monotonic()
+                    stats["repos_checked"] += 1
+                    try:
+                        resp = self.session.get(f"https://api.github.com/repos/{hit.repo}",
+                                                headers={"Accept": "application/vnd.github+json"}, timeout=15)
+                        if resp.status_code in (403, 429):
+                            quota_exhausted = True
+                        if resp.status_code == 200:
+                            metadata = resp.json()
+                            if isinstance(metadata, dict) and metadata.get("private") is False:
+                                raw = metadata.get("pushed_at")
+                                if isinstance(raw, str):
+                                    parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                                    if parsed.tzinfo is not None:
+                                        pushed_at = parsed.astimezone(timezone.utc)
+                    except (requests.RequestException, ValueError, TypeError):
+                        pass
+                cache[hit.repo] = pushed_at
+                if stats["repos_checked"] and stats["repos_checked"] % 50 == 0:
+                    print(f"   已核验 {stats['repos_checked']} 个候选仓库的推送时间")
+            pushed_at = cache[hit.repo]
+            if pushed_at is None:
+                stats["files_unverified_time"] += 1
+            elif not window.contains(pushed_at):
+                stats["files_outside_time"] += 1
+            else:
+                hit.repo_pushed_at = pushed_at.isoformat()
+                accepted.append(hit)
+        accepted.sort(key=lambda hit: hit.repo_pushed_at, reverse=True)
+        return accepted, stats
 
     def fetch_full_text(self, hit: Hit) -> str:
         """抓取文件全文（raw 域名直取，免 API 限速；失败忽略，如大文件/二进制）。"""

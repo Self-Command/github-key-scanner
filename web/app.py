@@ -12,8 +12,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from flask import Flask, jsonify, render_template, request, Response
 
 from config import config
-from gks.database import KeyDatabase
-from gks.key_tester import pick_base, test_key
+from gks.privacy import MonitoringDatabase as KeyDatabase
+from gks.scan_scope import scope_snapshot, save_settings
 
 app = Flask(__name__)
 db = KeyDatabase(config.DB_PATH)
@@ -41,14 +41,41 @@ def api_status():
     """调度状态：增量游标 + 上次任务 + 托管配置。"""
     cursor = db.get_cursor()
     last = db.recent_tasks(1)
+    try:
+        scan_scope = scope_snapshot(config.SCAN_SETTINGS_FILE)
+    except ValueError as error:
+        scan_scope = {"error": str(error)}
     return jsonify({
         "cursor": cursor,
         "last_task": last[0] if last else None,
         "interval": config.SCAN_INTERVAL,
         "incremental": config.SCAN_INCREMENTAL,
+        "monitoring_mode": "redacted",
+        "validity_test_enabled": False,
+        "scan_scope": scan_scope,
         "trigger_file": str(config.TRIGGER_FILE),
         "now": __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     })
+
+
+@app.get("/api/scan/settings")
+def api_scan_settings():
+    try:
+        return jsonify(scope_snapshot(config.SCAN_SETTINGS_FILE))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 500
+
+
+@app.put("/api/scan/settings")
+def api_save_scan_settings():
+    try:
+        save_settings(config.SCAN_SETTINGS_FILE, request.get_json(silent=True))
+        return jsonify({"ok": True, **scope_snapshot(config.SCAN_SETTINGS_FILE),
+                        "message": "已保存，从下一轮扫描生效"})
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except OSError:
+        return jsonify({"error": "时间范围保存失败，请重试"}), 500
 
 
 @app.post("/api/scan/trigger")
@@ -101,32 +128,8 @@ def api_update_status(key_id: int):
 
 @app.post("/api/keys/<int:key_id>/test")
 def api_key_test(key_id: int):
-    """测试大模型密钥有效性：请求 {api_base}/v1/models（只读）。
-
-    仅 llm 类别支持；测试结果会写回 status（active/invalid）与测试记录。
-    """
-    row = db.get(key_id)
-    if not row:
-        return jsonify({"error": "未找到"}), 404
-    if row.get("category") != "llm":
-        return jsonify({"error": "仅大模型（llm）类别的密钥支持 /models 测试",
-                        "category": row.get("category")}), 400
-    base = pick_base(row)
-    if not base:
-        return jsonify({"error": "无法确定 API_BASE_URL（记录与端点库均无）"}), 400
-    result = test_key(row["api_key"], base)
-    # 仅对明确结论更新状态（限流/端点不支持/网络问题不改状态，避免误判）
-    new_status = None
-    if result["verdict"] == "active":
-        new_status = "active"
-    elif result["verdict"] == "invalid":
-        new_status = "invalid"
-    if new_status:
-        db.update_status(key_id, new_status)
-    db.record_test(key_id, result)
-    result["status"] = new_status
-    result["base_url"] = base
-    return jsonify(result)
+    """Public monitoring never authenticates to providers with discovered keys."""
+    return jsonify({"error": "脱敏监测不保存完整密钥，已关闭有效性测试"}), 403
 
 
 @app.get("/api/export.csv")

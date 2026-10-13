@@ -27,10 +27,11 @@ from pathlib import Path
 
 from config import BASE_DIR, config
 from gks.analyzer import AIAnalyzer, RuleAnalyzer, make_analyzer
-from gks.database import KeyDatabase
+from gks.privacy import MonitoringDatabase as KeyDatabase, redact_text, sanitize_record
 from gks.endpoints import normalize_base_url
 from gks.github_search import GitHubCodeSearch, Hit, KEY_HINT_RE, extract_keys
 from gks.health import collect_health
+from gks.scan_scope import load_settings, resolve_window
 
 SAMPLE_FILE = BASE_DIR / "tests" / "sample_results.json"
 
@@ -95,7 +96,8 @@ def do_scan(args: argparse.Namespace, db: KeyDatabase, trigger: str = "manual") 
     stats = {"hits": 0, "analyzed": 0, "skipped": 0,
              "keys_found": 0, "keys_new": 0, "keys_updated": 0,
              "ok": False}
-    new_llm: list[dict] = []   # 本轮新增的大模型密钥（入库后自动测试）
+    repo_counts = {"repos_checked": 0, "files_outside_time": 0, "files_unverified_time": 0}
+    search_errors = search_incomplete = 0
     try:
         # ---- 1. 获取命中文件 ----
         if args.demo:
@@ -103,6 +105,9 @@ def do_scan(args: argparse.Namespace, db: KeyDatabase, trigger: str = "manual") 
             hits = load_sample_hits()
             print(f"   示例命中 {len(hits)} 个文件")
         else:
+            push_window = resolve_window(load_settings(config.SCAN_SETTINGS_FILE))
+            db.set_task_repo_scope(task_id, push_window)
+            print(f"== 仓库推送时间范围：{push_window.label} ==")
             if not config.GITHUB_TOKEN:
                 print("[错误] 未配置 GITHUB_TOKEN。请复制 .env.example 为 .env 并填写，"
                       "或使用 --demo 先体验演示模式。", file=sys.stderr)
@@ -124,15 +129,24 @@ def do_scan(args: argparse.Namespace, db: KeyDatabase, trigger: str = "manual") 
             scope = f"（本地窗口 {window_from or '全量'} ~ {window_to}，GitHub 端按最新索引排序）"
             print(f"查询数: {len(queries)} 条（字面量 {config.SEARCH_PATTERN!r} + language 分查） {scope}")
             hits = searcher.search(queries)
+            search_errors, search_incomplete = searcher.search_errors, searcher.search_incomplete_queries
+            db.set_task_search_counts(task_id, search_errors, search_incomplete)
             print(f"搜索完成，共 {len(hits)} 个候选文件，开始预筛与抓取…")
 
         stats["hits"] = len(hits)
+
+        if not args.demo:
+            hits, repo_counts = searcher.filter_recent_repositories(hits, push_window)
+            db.set_task_repo_counts(task_id, repo_counts)
+            stats["skipped"] += repo_counts["files_outside_time"] + repo_counts["files_unverified_time"]
+            print(f"   时间筛选：保留 {len(hits)} 个文件；范围外 {repo_counts['files_outside_time']} 个，"
+                  f"无法核验 {repo_counts['files_unverified_time']} 个；较新推送的仓库优先")
 
         # ---- 1.5 预筛与文件指纹去重（抓取前完成，避免无谓网络与配额开销）----
         # --full 或显式 --since（手动补扫）时忽略文件去重，强制重扫
         filtered: list[Hit] = []
         for hit in hits:
-            fk = f"{hit.repo}/{hit.path}"
+            fk = f"{hit.repo}/{hit.path}" + (f"@{hit.content_sha}" if hit.content_sha else "")
             if not args.full and not args.since and not db.should_scan_file(fk, window_from):
                 stats["skipped"] += 1
                 continue
@@ -151,7 +165,7 @@ def do_scan(args: argparse.Namespace, db: KeyDatabase, trigger: str = "manual") 
             print(f"== 抓取文件全文（{len(hits)} 个）==")
             for i, hit in enumerate(hits, 1):
                 hit.full_text = searcher.fetch_full_text(hit)
-                print(f"  [{i}/{len(hits)}] 已抓取 {hit.repo}/{hit.path}")
+                print(f"  [{i}/{len(hits)}] 已抓取候选文件")
             hits = [h for h in hits if extract_keys(h.text)]
         elif not args.demo:
             hits = [h for h in hits if extract_keys(h.text)]
@@ -192,7 +206,7 @@ def do_scan(args: argparse.Namespace, db: KeyDatabase, trigger: str = "manual") 
             stats["keys_found"] += len(keys_in_text)
             active_analyzer = analyzer if i <= ai_limit else fallback_analyzer
             mode_label = "AI" if isinstance(active_analyzer, AIAnalyzer) else "规则"
-            print(f"  [{i}/{len(hits)}] 分析 {hit.repo}/{hit.path}"
+            print(f"  [{i}/{len(hits)}] 分析候选文件"
                   f"（提取到 {len(keys_in_text)} 个密钥，{mode_label}）")
             for rec in active_analyzer.analyze(hit):
                 if rec.get("api_base"):
@@ -205,11 +219,11 @@ def do_scan(args: argparse.Namespace, db: KeyDatabase, trigger: str = "manual") 
                     "language": hit.language,
                     "context": hit.text[:4000],
                 })
+                # Convert to a non-usable identity before persistence or logging.
+                rec = sanitize_record(rec)
                 if db.upsert(rec):
                     stats["keys_new"] += 1
                     flag = "新增"
-                    if config.AUTO_TEST_LLM and rec.get("category") == "llm":
-                        new_llm.append(rec)
                 else:
                     stats["keys_updated"] += 1
                     flag = "更新"
@@ -217,7 +231,7 @@ def do_scan(args: argparse.Namespace, db: KeyDatabase, trigger: str = "manual") 
                       f" ({rec.get('category', 'unknown')})"
                       f" | base={rec['api_base'] or '-'} | conf={rec['confidence']}"
                       f" | {rec['notes'][:60]}")
-            db.mark_file_scanned(f"{hit.repo}/{hit.path}")
+            db.mark_file_scanned(f"{hit.repo}/{hit.path}" + (f"@{hit.content_sha}" if hit.content_sha else ""))
             stats["analyzed"] += 1
 
         print("\n== 扫描完成 ==")
@@ -228,43 +242,28 @@ def do_scan(args: argparse.Namespace, db: KeyDatabase, trigger: str = "manual") 
               f"（共提取 {stats['keys_found']}）。")
         print(f"   数据库现有 {db.count()} 条记录：{config.DB_PATH}")
 
-        # ---- 3. 新增大模型密钥自动有效性测试（GET /models 只读探测，零消耗）----
-        if config.AUTO_TEST_LLM and new_llm:
-            from gks.key_tester import pick_base, test_key
-            print(f"\n== 自动测试新增 {len(new_llm)} 个大模型密钥（/v1/models 只读探测）==")
-            for rec in new_llm:
-                key_id = db.find_key_id(rec["api_key"])
-                base = pick_base(rec)
-                if not key_id or not base:
-                    print(f"   [跳过] {rec['provider']} {rec['api_key'][:16]}…：无法定位记录或无端点")
-                    continue
-                r = test_key(rec["api_key"], base)
-                new_status = None
-                if r["verdict"] == "active":
-                    new_status = "active"
-                elif r["verdict"] == "invalid":
-                    new_status = "invalid"
-                if new_status:
-                    db.update_status(key_id, new_status)
-                db.record_test(key_id, r)
-                extra = f" → 状态={new_status}" if new_status else ""
-                print(f"   [{r['verdict']}] {rec['provider']} {rec['api_key'][:16]}…"
-                      f" HTTP {r.get('status_code', '-')} 模型数 {r.get('models', '-')}"
-                      f" {r.get('elapsed', '-')}s{extra}"
-                      + (f" | {r['error'][:80]}" if r.get("error") else ""))
-
-        db.finish_task(task_id, status="success",
+        issues = []
+        if repo_counts["files_unverified_time"]:
+            issues.append(f"{repo_counts['files_unverified_time']} 个候选文件的仓库时间无法核验")
+        if search_errors:
+            issues.append(f"{search_errors} 次代码搜索请求失败")
+        if search_incomplete:
+            issues.append(f"{search_incomplete} 页代码搜索被 GitHub 标记为不完整")
+        complete = not issues
+        warning = "；".join(issues) + "，本轮结果不完整" if issues else ""
+        db.finish_task(task_id, status="success" if complete else "error", error=warning,
                        hits=stats["hits"], files_analyzed=stats["analyzed"],
                        files_skipped=stats["skipped"], keys_found=stats["keys_found"],
                        keys_new=stats["keys_new"], keys_updated=stats["keys_updated"],
                        advance_cursor=not args.demo)
-        stats["ok"] = True
+        stats["ok"] = complete
     except KeyboardInterrupt:
         print("[中断] 本轮扫描已由用户终止。", file=sys.stderr)
         db.finish_task(task_id, status="error", error="用户中断")
     except Exception as e:  # noqa: BLE001 —— daemon 循环中单轮失败不中断
-        print(f"[错误] 本轮扫描失败：{e}", file=sys.stderr)
-        db.finish_task(task_id, status="error", error=str(e)[:500])
+        error = redact_text(str(e), [config.AI_API_KEY, config.GITHUB_TOKEN])[:500]
+        print(f"[错误] 本轮扫描失败：{error}", file=sys.stderr)
+        db.finish_task(task_id, status="error", error=error)
     return stats
 
 

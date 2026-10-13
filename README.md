@@ -1,5 +1,7 @@
 # GitHub 密钥扫描器（github-key-scanner）
 
+> 本部署分支的时间范围筛选和脱敏存储行为见 [DEPLOYMENT_CHANGES.md](DEPLOYMENT_CHANGES.md)。下方保留上游功能说明。
+
 用正则 `sk-[a-z0-9]{32}` 在 GitHub 公开代码中搜索疑似泄露的大模型 API Key，
 调用 AI 整理出密钥对应的**服务商、API_BASE_URL、置信度与备注**，存入 SQLite，
 并通过 Web 页面可视化浏览、筛选与标记。

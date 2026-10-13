@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GitHub 密钥扫描器 · API Key 情报库</title>
+<title>GitHub 泄露监测 · 脱敏记录</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -12,7 +12,7 @@
     <span class="logo">🔑</span>
     <div>
       <h1>GitHub 密钥扫描器</h1>
-      <p class="sub">sk-* 密钥泄露监测 · AI 推断服务商与 API_BASE · 数据来自公开代码</p>
+      <p class="sub">公开仓库泄露监测 · 仅保存掩码与指纹 · AI 推断服务商 · 不验证密钥有效性</p>
     </div>
   </div>
   <div class="top-actions">
@@ -24,7 +24,7 @@
 <main>
   <!-- 统计卡片 -->
   <section class="cards" id="stats-cards">
-    <div class="card"><div class="card-num" id="st-total">-</div><div class="card-label">密钥总数</div></div>
+    <div class="card"><div class="card-num" id="st-total">-</div><div class="card-label">脱敏记录总数</div></div>
     <div class="card"><div class="card-num" id="st-today">-</div><div class="card-label">今日新增</div></div>
     <div class="card"><div class="card-num" id="st-high">-</div><div class="card-label">高置信度（≥0.8）</div></div>
     <div class="card"><div class="card-num" id="st-providers">-</div><div class="card-label">涉及服务商</div></div>
@@ -39,21 +39,45 @@
       </div>
       <button id="btn-trigger-scan" class="btn btn-primary">立即扫描</button>
     </div>
+    <form id="scan-scope-form" class="scan-scope-form">
+      <label class="scope-field" for="sel-scan-range">仓库最近推送
+        <select id="sel-scan-range" name="preset">
+          <option value="24h">最近 24 小时</option>
+          <option value="7d">最近 7 天</option>
+          <option value="30d" selected>最近 30 天</option>
+          <option value="custom">自定义日期</option>
+        </select>
+      </label>
+      <div id="custom-scan-dates" class="scope-dates" hidden>
+        <label class="scope-field" for="scan-start-date">开始日期
+          <input id="scan-start-date" type="date" name="start_date">
+        </label>
+        <label class="scope-field" for="scan-end-date">结束日期（含当天）
+          <input id="scan-end-date" type="date" name="end_date">
+        </label>
+      </div>
+      <button id="btn-save-scope" type="submit" class="btn">保存范围</button>
+      <span id="scan-scope-feedback" class="scope-feedback" role="status" aria-live="polite"></span>
+    </form>
+    <p id="scan-scope-summary" class="scope-summary">正在读取扫描范围…</p>
+    <p class="scope-help">按仓库最后推送时间筛选，较新的候选优先；自定义日期按北京时间计算。保存后从下一轮生效，历史记录保留。扫描受搜索页数限制。</p>
+    <div class="tasks-scroll">
     <table class="tasks-table">
       <thead>
         <tr>
-          <th>#</th><th>开始时间</th><th>触发</th><th>模式</th><th>范围窗口</th>
-          <th>命中</th><th>跳过</th><th>分析</th><th>新增</th><th>更新</th><th>状态</th><th>耗时</th>
+          <th>#</th><th>开始时间</th><th>触发</th><th>模式</th><th>推送时间范围（北京时间）</th>
+          <th>命中</th><th>范围外 / 未核验</th><th>跳过合计</th><th>分析</th><th>新增</th><th>更新</th><th>状态</th><th>耗时</th>
         </tr>
       </thead>
       <tbody id="tasks-tbody"></tbody>
     </table>
+    </div>
     <div class="task-cursor" id="task-cursor"></div>
   </section>
 
   <!-- 筛选工具栏 -->
   <section class="toolbar">
-    <input id="inp-q" type="search" placeholder="搜索密钥 / 服务商 / 仓库 / 路径 / 备注 / API_BASE…">
+    <input id="inp-q" type="search" placeholder="搜索指纹 / 服务商 / 仓库 / 路径 / 备注 / API_BASE…">
     <select id="sel-category">
       <option value="">全部分类</option>
       <option value="llm">大模型</option>
@@ -69,7 +93,7 @@
       <option value="1.0">5 分（文件含明确 URL）</option>
     </select>
     <select id="sel-status">
-      <option value="">全部有效性</option>
+      <option value="">全部标记</option>
       <option value="unknown">未验证</option>
       <option value="active">疑似有效</option>
       <option value="invalid">无效</option>
@@ -94,7 +118,7 @@
     <table>
       <thead>
         <tr>
-          <th>ID</th><th>API KEY</th><th>分类</th><th>服务商</th><th>API_BASE_URL</th>
+          <th>ID</th><th>密钥掩码 / 指纹</th><th>分类</th><th>服务商</th><th>API_BASE_URL</th>
           <th>置信度</th><th>来源</th><th>备注</th><th>状态</th><th>首次发现</th><th></th>
         </tr>
       </thead>

@@ -1,0 +1,12 @@
+.env
+.env.*
+secrets/
+certs/
+**/.git
+**/.env
+**/.env.*
+**/data
+**/__pycache__
+**/*.pyc
+**/*.log
+**/.venv

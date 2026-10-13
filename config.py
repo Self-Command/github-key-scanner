@@ -64,6 +64,7 @@ class Config:
     SCAN_INTERVAL = int(_get("SCAN_INTERVAL", "7200"))       # daemon 两轮扫描间隔（秒），默认 2 小时
     SCAN_INCREMENTAL = _get("SCAN_INCREMENTAL", "true").lower() == "true"  # 增量：只扫上次成功后新索引文件
     TRIGGER_FILE = BASE_DIR / _get("SCAN_TRIGGER_FILE", "data/scan.trigger")  # Web『立即扫描』触发文件
+    SCAN_SETTINGS_FILE = BASE_DIR / _get("SCAN_SETTINGS_FILE", "data/scan-settings.json")
     STALE_TASK_SECONDS = int(_get(
         "STALE_TASK_SECONDS", str(max(14_400, SCAN_INTERVAL * 2))))
     HEALTH_MAX_SCAN_AGE = int(_get(

@@ -53,6 +53,9 @@ class KeyDatabase:
 
     def _init_schema(self) -> None:
         with self._connect() as conn:
+            # Gunicorn workers and daemon can initialize a shared volume at once.
+            # Serialize the read/ALTER migration sequence across all processes.
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS api_keys (
                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,6 +112,15 @@ class KeyDatabase:
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_started ON scan_tasks(started_at DESC)")
+            task_cols = {r[1] for r in conn.execute("PRAGMA table_info(scan_tasks)")}
+            for name, definition in {
+                "repo_time_preset": "TEXT DEFAULT ''", "repo_pushed_from": "TEXT DEFAULT ''",
+                "repo_pushed_before": "TEXT DEFAULT ''", "repos_checked": "INTEGER DEFAULT 0",
+                "files_outside_time": "INTEGER DEFAULT 0", "files_unverified_time": "INTEGER DEFAULT 0",
+                "search_errors": "INTEGER DEFAULT 0", "search_incomplete_queries": "INTEGER DEFAULT 0",
+            }.items():
+                if name not in task_cols:
+                    conn.execute(f"ALTER TABLE scan_tasks ADD COLUMN {name} {definition}")
 
             # ---- 增量游标（单行表）----
             conn.execute("""
@@ -175,6 +187,21 @@ class KeyDatabase:
                 "VALUES (?,?,?,?,?)",
                 (trigger, mode, window_from, window_to, pages))
             return cur.lastrowid
+
+    def set_task_repo_scope(self, task_id: int, window) -> None:
+        with self._connect() as conn:
+            conn.execute("UPDATE scan_tasks SET repo_time_preset=?, repo_pushed_from=?, repo_pushed_before=? WHERE id=?",
+                         (window.preset, window.start.isoformat(), window.end.isoformat(), task_id))
+
+    def set_task_repo_counts(self, task_id: int, counts: dict) -> None:
+        with self._connect() as conn:
+            conn.execute("UPDATE scan_tasks SET repos_checked=?, files_outside_time=?, files_unverified_time=? WHERE id=?",
+                         (counts["repos_checked"], counts["files_outside_time"], counts["files_unverified_time"], task_id))
+
+    def set_task_search_counts(self, task_id: int, errors: int, incomplete: int) -> None:
+        with self._connect() as conn:
+            conn.execute("UPDATE scan_tasks SET search_errors=?, search_incomplete_queries=? WHERE id=?",
+                         (errors, incomplete, task_id))
 
     def finish_task(self, task_id: int, status: str = "success",
                     hits: int = 0, files_analyzed: int = 0, files_skipped: int = 0,

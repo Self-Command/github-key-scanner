@@ -19,8 +19,8 @@ import requests
 
 from gks.endpoints import (candidates_from_keywords, find as find_endpoint,
                            match_by_domain, match_keywords)
-from gks.github_search import extract_keys
-from gks.prompts import SYSTEM_PROMPT, build_user_message
+from gks.github_search import KEY_PATTERNS, extract_keys
+from gks.prompts import SYSTEM_PROMPT
 
 # ---------- 文本预检与截断工具 ----------
 
@@ -353,22 +353,38 @@ class AIAnalyzer:
     def analyze(self, hit) -> list[dict]:
         url = f"{self.base_url}/chat/completions"
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-        # 预检（关键词/文件内 URL）→ 截断超长文件 → 用占位符替换密钥原文。
-        # 第三方 AI 只需判断上下文，不应接收可能仍有效的凭据。
-        pf = preflight(hit.text)
+        # Send only signals chosen from our static endpoint/keyword/format lists.
+        # Arbitrary source values and metadata never enter an external AI request.
         keys = extract_keys(hit.text)
-        ctx = truncate_context(hit.text, keys, max_tokens=self.max_tokens,
-                               window=self.context_window)
         placeholder_to_key: dict[str, str] = {}
+        candidates = []
         for index, key in enumerate(keys, 1):
             placeholder = f"KEY_CANDIDATE_{index}"
             placeholder_to_key[placeholder] = key
-            ctx = ctx.replace(key, placeholder)
+            at = hit.text.find(key)
+            local = hit.text[max(0, at - self.context_window):at + len(key) + self.context_window]
+            endpoints = []
+            for source_url in extract_urls(local):
+                for endpoint in match_by_domain(source_url):
+                    if endpoint["provider"] not in [e["provider"] for e in endpoints]:
+                        endpoints.append({"provider": endpoint["provider"],
+                                          "domain": endpoint["domain"],
+                                          "base_urls": endpoint["base_urls"]})
+            candidates.append({
+                "api_key": placeholder,
+                "format": next((name for name, pattern in KEY_PATTERNS if pattern.fullmatch(key)), "unknown"),
+                "category_hint": classify_key(key, local),
+                "keywords": [name for name, _ in match_keywords(local)],
+                "providers": candidates_from_keywords(local),
+                "known_endpoints": endpoints,
+            })
+        from gks.privacy import redact_text
+        user_message = json.dumps({"mode": "public_redacted_signals", "candidates": candidates}, ensure_ascii=False)
         payload = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": build_user_message(hit, preflight=pf, text=ctx)},
+                {"role": "user", "content": user_message},
             ],
             "temperature": self.temperature,
         }
@@ -390,7 +406,8 @@ class AIAnalyzer:
             except Exception as e:  # noqa: BLE001 —— 网络异常统一降级
                 last_err = str(e)[:200]
             time.sleep(1.5)
-        print(f"  [AI 失败] {hit.repo}/{hit.path}：{last_err}，降级为规则引擎")
+        last_err = redact_text(str(last_err), keys + [self.api_key])
+        print(f"  [AI 失败] 候选文件：{last_err}，降级为规则引擎")
         return RuleAnalyzer().analyze(hit)
 
     @staticmethod

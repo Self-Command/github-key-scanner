@@ -12,6 +12,7 @@ const $ = (id) => document.getElementById(id);
 
 /* ---------- 工具 ---------- */
 function maskKey(key) {
+  if (key.includes(" | sha256:")) return key.split(" | sha256:")[0];
   if (key.length <= 12) return key;
   return key.slice(0, 8) + "****" + key.slice(-4);
 }
@@ -109,8 +110,7 @@ function renderTable(rows) {
       <td>${r.id}</td>
       <td class="key-cell"><span class="key-val">${esc(maskKey(r.api_key))}</span>
         <span class="key-actions">
-          <button class="icon-btn" title="显示完整密钥" onclick="toggleKey(this, '${esc(r.api_key)}')">👁</button>
-          <button class="icon-btn" title="复制" onclick="copyText('${esc(r.api_key)}', this)">⧉</button>
+          <button class="icon-btn" title="复制 SHA256 指纹" onclick="copyText('${esc(r.key_fingerprint)}', this)">⧉</button>
         </span>
       </td>
       <td><span class="${catCls}">${esc(CATEGORY_MAP[r.category] || r.category || "未知")}</span></td>
@@ -121,9 +121,7 @@ function renderTable(rows) {
       <td class="note-cell note-toggle" title="点击展开/收起" onclick="toggleNote(this)">${esc(notes)}</td>
       <td><span class="badge badge-${r.status}">${esc(STATUS_MAP[r.status] || r.status || "unknown")}</span></td>
       <td>${esc(r.first_seen)}</td>
-      <td>${r.category === "llm"
-        ? `<button class="icon-btn" onclick="testKey(${r.id}, this)" title="请求 /v1/models 测试有效性">测试</button> `
-        : ""}<button class="icon-btn" onclick="showDetail(${r.id})">详情</button></td>
+      <td><button class="icon-btn" onclick="showDetail(${r.id})">详情</button></td>
     </tr>`;
   }).join("");
 }
@@ -134,39 +132,11 @@ function toggleNote(td) {
 }
 
 /* ---------- 交互 ---------- */
-function toggleKey(btn, key) {
-  const span = btn.closest("td").querySelector(".key-val");
-  if (span.textContent.includes("****")) {
-    span.textContent = key;
-    btn.textContent = "🙈";
-  } else {
-    span.textContent = maskKey(key);
-    btn.textContent = "👁";
-  }
-}
-
-/* 测试后同步行内状态徽章（状态只读，由测试/自动测试驱动） */
-function syncStatusBadge(id, status) {
-  const td = document.querySelector(`tr[data-id="${id}"] td:nth-child(9)`);
-  if (td) {
-    td.innerHTML = `<span class="badge badge-${status}">${esc(STATUS_MAP[status] || status)}</span>`;
-  }
-  loadStats();
-}
-
 async function showDetail(id) {
   const r = await (await fetch(`/api/keys/${id}`)).json();
-  const testHtml = r.category === "llm" ? `
-    <div class="detail-row"><span class="k">有效性测试</span>
-      <span class="v">
-        <button class="icon-btn" id="btn-test" onclick="testKeyDetail(${r.id})" title="请求 ${esc(r.api_base_url || "默认端点")}/models">请求 /v1/models 测试</button>
-        <span id="test-result"></span>
-      </span>
-    </div>` : "";
-  const lastTestHtml = r.last_tested_at ? `
-    <div class="detail-row"><span class="k">上次测试</span><span class="v">${esc(r.last_tested_at)}${renderLastTest(r.last_test_result)}</span></div>` : "";
   $("modal-body").innerHTML = `
-    <div class="detail-row"><span class="k">API KEY</span><span class="v">${esc(r.api_key)}</span></div>
+    <div class="detail-row"><span class="k">密钥掩码</span><span class="v">${esc(r.key_mask || maskKey(r.api_key))}</span></div>
+    <div class="detail-row"><span class="k">SHA256 指纹</span><span class="v">${esc(r.key_fingerprint)}</span></div>
     <div class="detail-row"><span class="k">分类</span><span class="v">${esc(CATEGORY_MAP[r.category] || r.category || "未知")}</span></div>
     <div class="detail-row"><span class="k">服务商</span><span class="v">${esc(r.provider || "unknown")}</span></div>
     <div class="detail-row"><span class="k">API_BASE_URL</span><span class="v">${esc(r.api_base_url || "-")}</span></div>
@@ -175,70 +145,68 @@ async function showDetail(id) {
     <div class="detail-row"><span class="k">仓库 / 路径</span><span class="v">${esc(r.repo)} / ${esc(r.file_path)}</span></div>
     <div class="detail-row"><span class="k">备注</span><span class="v">${esc(r.notes || "-")}</span></div>
     <div class="detail-row"><span class="k">首次发现</span><span class="v">${esc(r.first_seen)}</span></div>
-    ${testHtml}
-    ${lastTestHtml}
-    <div class="detail-row"><span class="k">代码上下文</span><span class="v"></span></div>
-    <pre class="context">${esc(r.context || "（无上下文）")}</pre>`;
+    <div class="detail-row"><span class="k">脱敏记录</span><span class="v">不保存密钥原文与代码全文；请查看来源仓库定位泄露。</span></div>`;
   $("modal").hidden = false;
-}
-
-const VERDICT_MAP = {
-  active: "✅ 有效", invalid: "❌ 无效", rate_limited: "⏳ 限流",
-  unsupported: "⚠️ 端点不支持", network: "🌐 网络异常", error: "❓ 异常",
-};
-
-function renderLastTest(resultJson) {
-  try {
-    const r = JSON.parse(resultJson);
-    const verdict = VERDICT_MAP[r.verdict] || r.verdict;
-    return `<div class="test-note ${r.verdict === "active" ? "test-ok" : (r.verdict === "invalid" ? "test-err" : "")}">
-      ${verdict} · HTTP ${r.status_code ?? "-"} · 模型数 ${r.models ?? "-"} · ${r.elapsed}s${r.error ? `<br>${esc(r.error)}` : ""}</div>`;
-  } catch (e) {
-    return "";
-  }
-}
-
-async function testKey(id, btn) {
-  const old = btn.textContent;
-  btn.disabled = true; btn.textContent = "测试中…";
-  try {
-    const r = await (await fetch(`/api/keys/${id}/test`, { method: "POST" })).json();
-    if (r.error) { window.alert(`测试失败：${r.error}`); return; }
-    const verdict = VERDICT_MAP[r.verdict] || r.verdict;
-    window.alert(`${verdict} · HTTP ${r.status_code ?? "-"} · 模型数 ${r.models ?? "-"} · ${r.elapsed}s${r.error ? `\n${r.error}` : ""}\n端点: ${r.base_url}`);
-    if (r.status) syncStatusBadge(id, r.status);
-  } catch (e) {
-    window.alert("测试请求失败：服务未响应");
-  } finally {
-    btn.disabled = false; btn.textContent = old;
-  }
-}
-
-async function testKeyDetail(id) {
-  const btn = $("btn-test");
-  const box = $("test-result");
-  if (!btn || !box) return;
-  btn.disabled = true; btn.textContent = "测试中…";
-  box.className = ""; box.textContent = "";
-  try {
-    const r = await (await fetch(`/api/keys/${id}/test`, { method: "POST" })).json();
-    if (r.error) { box.className = "test-err"; box.textContent = r.error; }
-    else {
-      const verdict = VERDICT_MAP[r.verdict] || r.verdict;
-      box.innerHTML = `<span class="${r.verdict === "active" ? "test-ok" : (r.verdict === "invalid" ? "test-err" : "")}">
-        ${verdict} · HTTP ${r.status_code ?? "-"} · 模型数 ${r.models ?? "-"} · ${r.elapsed}s</span>${r.error ? `<div class="test-err">${esc(r.error)}</div>` : ""}`;
-    }
-    if (r.status) syncStatusBadge(id, r.status);
-  } catch (e) {
-    box.className = "test-err"; box.textContent = "测试请求失败：服务未响应";
-  } finally {
-    btn.disabled = false; btn.textContent = "重新测试";
-  }
 }
 
 /* ---------- 扫描任务面板 ---------- */
 const TRIGGER_MAP = { manual: "手动", schedule: "定时", web: "Web" };
 const TASK_STATUS_MAP = { running: "运行中", success: "成功", error: "失败" };
+const SCOPE_LABELS = { "24h": "最近 24 小时", "7d": "最近 7 天", "30d": "最近 30 天", custom: "自定义日期" };
+const scopeState = { initialized: false, dirty: false };
+const beijingTime = (value) => value ? new Intl.DateTimeFormat("zh-CN", {
+  timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+  hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+}).format(new Date(value)) : "";
+
+function updateCustomDates() {
+  const custom = $("sel-scan-range").value === "custom";
+  $("custom-scan-dates").hidden = !custom;
+  for (const id of ["scan-start-date", "scan-end-date"]) {
+    $(id).disabled = !custom;
+    $(id).required = custom;
+  }
+}
+
+function renderScanScope(scope) {
+  if (!scope || scope.error) {
+    $("scan-scope-summary").textContent = scope?.error || "暂时无法读取扫描范围，请刷新后重试";
+    $("scan-scope-summary").classList.add("err-text");
+    return;
+  }
+  const settings = scope.settings;
+  const window = scope.window;
+  if (!scopeState.dirty) {
+    $("sel-scan-range").value = settings.preset;
+    $("scan-start-date").value = settings.start_date || "";
+    $("scan-end-date").value = settings.end_date || "";
+    updateCustomDates();
+  }
+  scopeState.initialized = true;
+  $("scan-scope-summary").classList.remove("err-text");
+  $("scan-scope-summary").textContent = `已保存：${window.label} · 当前范围 ${beijingTime(window.start_at)} 至 ${beijingTime(window.end_before)}（不含终点）`;
+}
+
+async function saveScanScope(event) {
+  event.preventDefault();
+  const btn = $("btn-save-scope");
+  btn.disabled = true;
+  const value = { preset: $("sel-scan-range").value,
+    start_date: $("scan-start-date").value, end_date: $("scan-end-date").value };
+  $("scan-scope-feedback").textContent = "正在保存…";
+  try {
+    const response = await fetch("/api/scan/settings", { method: "PUT",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(value) });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "保存失败");
+    // Preserve edits made while the request was in flight.
+    if ($("sel-scan-range").value === value.preset && $("scan-start-date").value === value.start_date && $("scan-end-date").value === value.end_date) scopeState.dirty = false;
+    renderScanScope(result);
+    $("scan-scope-feedback").textContent = scopeState.dirty ? "已保存提交的范围，当前更改尚未保存" : result.message;
+  } catch (error) {
+    $("scan-scope-feedback").textContent = error.message || "保存失败，请重试";
+  } finally { btn.disabled = false; }
+}
 
 async function loadTasks() {
   try {
@@ -247,6 +215,7 @@ async function loadTasks() {
       (await fetch("/api/tasks?limit=10")).json(),
     ]);
     renderTaskStatus(status);
+    renderScanScope(status.scan_scope);
     renderTasks(tasks.items || []);
   } catch (e) { /* 服务未启动时静默 */ }
 }
@@ -263,41 +232,44 @@ function renderTaskStatus(s) {
   } else {
     html += "尚未运行过扫描";
   }
-  const cursorText = cursor.last_window_to ? cursor.last_window_to : "全量";
-  html += ` · 增量游标：<code>${esc(cursorText)}</code> · 间隔 ${s.interval}s`;
+  html += ` · 间隔 ${s.interval}s`;
   line.innerHTML = html;
 }
 
 function renderTasks(rows) {
   const tbody = $("tasks-tbody");
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="12" class="empty-inline">暂无任务 —— 启动 <code>python main.py daemon</code> 后自动轮询</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="13" class="empty-inline">暂无扫描任务</td></tr>';
     $("task-cursor").textContent = "";
     return;
   }
   tbody.innerHTML = rows.map((r) => {
-    const scope = r.window_from ? `${esc(r.window_from)} ~ ${esc(r.window_to)}` : "全量";
+    const scope = r.repo_pushed_from ? `${esc(SCOPE_LABELS[r.repo_time_preset] || r.repo_time_preset)}<br>${esc(beijingTime(r.repo_pushed_from))} 至<br>${esc(beijingTime(r.repo_pushed_before))}（不含终点）` : "历史任务：未按推送时间筛选";
     const stCls = `badge badge-${r.status === "success" ? "active" : (r.status === "error" ? "invalid" : "unknown")}`;
     return `<tr>
       <td>${r.id}</td>
       <td>${esc(r.started_at)}</td>
       <td>${esc(TRIGGER_MAP[r.trigger] || r.trigger)}</td>
       <td>${esc(r.mode)}</td>
-      <td title="${r.window_from ? `${r.window_from} ~ ${r.window_to}` : "首次/全量"}">${scope}</td>
+      <td>${scope}</td>
       <td>${r.hits}</td>
+      <td>${r.files_outside_time || 0} / ${r.files_unverified_time || 0}</td>
       <td>${r.files_skipped}</td>
       <td>${r.files_analyzed}</td>
       <td>${r.keys_new}</td>
       <td>${r.keys_updated}</td>
-      <td><span class="${stCls}">${esc(TASK_STATUS_MAP[r.status] || r.status)}</span></td>
+      <td><span class="${stCls}" title="${esc(r.error || '')}">${esc(TASK_STATUS_MAP[r.status] || r.status)}</span>${r.error ? `<br><span class="err-text">${esc(r.error)}</span>` : ''}</td>
       <td>${r.duration}s</td>
     </tr>`;
   }).join("");
-  const cursor = rows[0].window_to ? `当前游标：${esc(rows[0].window_to)}（下轮增量起点）` : "游标为空（下轮将全量扫描）";
-  $("task-cursor").textContent = cursor;
+  $("task-cursor").textContent = "命中为时间筛选前的搜索结果；跳过合计包含范围外、时间未核验、无密钥特征和重复文件。仓库推送时间不代表文件修改时间。";
 }
 
 async function triggerScan() {
+  if (scopeState.dirty) {
+    $("scan-scope-feedback").textContent = "请先保存时间范围，再点击立即扫描";
+    return;
+  }
   const btn = $("btn-trigger-scan");
   btn.disabled = true;
   try {
@@ -329,11 +301,23 @@ $("btn-export").addEventListener("click", () => {
   window.location.href = `/api/export.csv?${p}`;
 });
 $("btn-trigger-scan").addEventListener("click", triggerScan);
+$("scan-scope-form").addEventListener("submit", saveScanScope);
+for (const id of ["sel-scan-range", "scan-start-date", "scan-end-date"]) {
+  $(id).addEventListener("change", () => {
+    scopeState.dirty = true;
+    updateCustomDates();
+    $("scan-scope-feedback").textContent = "有未保存的时间范围";
+  });
+}
 $("modal-close").addEventListener("click", () => { $("modal").hidden = true; });
 $("modal").addEventListener("click", (e) => { if (e.target === $("modal")) $("modal").hidden = true; });
 
 /* ---------- 启动 ---------- */
 loadStats();
+const beijingToday = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+$("scan-start-date").max = beijingToday;
+$("scan-end-date").max = beijingToday;
+updateCustomDates();
 loadKeys();
 loadTasks();
 // 全自动托管下的页面自动刷新：每 30 秒同步统计与任务面板

@@ -14,8 +14,9 @@ CATEGORY_CN = {
     "llm": "大模型", "cloud": "云服务", "other": "其他服务", "unknown": "未知",
 }
 
-SYSTEM_PROMPT = f"""你是 API 密钥泄露上下文分析专家。用户提供的代码片段中，疑似密钥
-已在本地替换成 KEY_CANDIDATE_1、KEY_CANDIDATE_2 等占位符。请仅分析这些候选，逐条推测：
+SYSTEM_PROMPT = f"""你是 API 密钥泄露上下文分析专家。用户提供本地提取的静态线索，
+包括格式、分类提示、服务商关键词和已知端点；不提供原始代码、文件名或 URL 参数。
+候选只以 KEY_CANDIDATE_1、KEY_CANDIDATE_2 等占位符标识。请仅分析这些候选，逐条推测：
 服务商（provider）、API_BASE_URL、密钥分类（category）。不得尝试还原、猜测或输出密钥原文；
 api_key 字段必须原样填写对应的 KEY_CANDIDATE_N。
 
