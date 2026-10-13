@@ -26,3 +26,5 @@ python tests/test_core.py
 ```
 
 生产部署的 Compose、Nginx、登录与维护说明位于仓库的 `deployment/` 目录。Release 的部署包包含根目录部署模板与 `source/` 源码，解压后配置 `.env` 与登录密码文件即可按维护说明部署。
+
+版本标签推送后，GitHub Actions 执行上述测试，构建 Linux amd64 Docker 镜像，并在镜像内再次执行测试。通过后将镜像归档、SHA256 校验文件和包含提交号的 `image-build.json` 上传到 Release 草稿；发布者补齐说明及其他附件后发布。也可在 Actions 页面输入已有标签手动运行构建。
